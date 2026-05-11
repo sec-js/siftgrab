@@ -256,7 +256,7 @@ function create_triage_dir(){
 make_green "Creating Output Directories" 
 triage_dirs=("All_Slicers" "All_Summary" "Application_Execution/Amcache" "Application_Execution/Bam" "Application_Execution/Jumplist" \
 "Application_Execution/PCA" "Application_Execution/Prefetch" "Application_Execution/SRUM" "Application_Execution/Shimcache" "Application_Execution/Registry_AutoStart" \
-"Application_Execution/lolbas" "Artifact" "Persistence/BITS" "Persistence/ScheduledTasks" "Persistence/Services" "Persistence/Registry" "Browser_Activity" \
+"Artifact" "Persistence/BITS" "Persistence/ScheduledTasks" "Persistence/Services" "Persistence/Registry" "Browser_Activity" \
 "File_System/Deleted_Files" "File_Access/LNK" "File_Access/ShellBags" "File_Access/Windows_Index" "File_Access/Registry_MRU" "File_System/AlternateDataStreams" \
 "File_System/MFT" "File_System/USNJRNL" "File_System/Volatile" "Installed_Software" "Network_Info/UserAccessLog" "Registry_Settings/CLSID" "/Registry_Settings/Audit_Policy/" \
 "Regripper/Software" "Regripper/System" "Regripper/Security" "Regripper/Sam" "User_Account_Info/Sam" "Scripting/PowerShell" "Scripting/WMI" "Sigma_Alerts" \
@@ -442,7 +442,7 @@ function select_parsers(){
       echo "Enter as comma separated values
       "
       echo "Available Parsers
-mft,usnjrnl,registry,regmerge,lnks,evtx,amcache,prefetch,shimcache,shellbags,ntlm_hash,recbin,srum,browser,winindex,services,current.mdb,bits,winactivities,pca,bam
+mft,usnjrnl,registry,regmerge,lnks,evtx,amcache,prefetch,shimcache,shellbags,ntlm_hash,recbin,srum,browser,winindex,services,current.mdb,bits,winactivities,pca,bam,objects_data
 "
 make_red "SELECT PARSERS TO RUN"
 echo "Enter to select all parsers"
@@ -460,6 +460,7 @@ echo "Enter to select all parsers"
       cust_amc=$(echo $parsers|grep -i amcache)
       cust_pf=$(echo $parsers|grep -i prefetch)
       cust_hash=$(echo $parsers|grep -i ntlm_hash)
+      cust_wmi=$(echo $parsers|grep -i objects_data)
       cust_job=$(echo $parsers|grep -i jobs)
       cust_rbin=$(echo $parsers|grep -i recbin)
       cust_srum=$(echo $parsers|grep -i srum)
@@ -491,6 +492,7 @@ function custom_parsers(){
            [ $cust_amc ] && extract_amcache.hve
            [ $cust_hash ] && secrets_dump
            [ $cust_pf ] && prefetch_extract
+           [ $cust_wmi ] && objects_data_extract
            [ $cust_job ] && jobs_extract
            [ $cust_rbin ] && rec_bin
            [ $cust_brow ] && browser_extract
@@ -725,6 +727,7 @@ function parsers(){
            extract_amcache.hve
            secrets_dump
            prefetch_extract
+           objects_data_extract
            rec_bin
            browser_extract
            parse_windows_index
@@ -746,7 +749,6 @@ function parsers(){
            #zircolite_evtx
            evtx_hussar
            srum_dump
-           scan_for_lolbas
 ########### End Artifact Parsers ############################
 }
 
@@ -1030,27 +1032,13 @@ function winservices() {
     if [ -f "$case_dir/Persistence/Services/winservices.py-$comp_name.csv" ]; then
       # Process the CSV file in a single pass
       grep -E '^[0-9]{4}' "$case_dir/Persistence/Services/winservices.py-$comp_name.csv" | \
-      awk -F',' -v comp_name="$comp_name" '{
-        timestamp = $1
-        cmd = "date -d \"" timestamp "\" +\"%s\" 2>/dev/null"
-        cmd | getline tlntime
-        close(cmd)
-        tlninfo = "||[Service Last Write]: " $2 ";" $3 ";" $5 ";" $7 ";" $8
-        print tlntime "|Svc|" comp_name tlninfo
-    }' >> "$tempfile"
-    fi
-
-    # Prepare for Excel conversion
-    winservices_csv="$case_dir/Persistence/Services/winservices.py-$comp_name.csv"
-    winservices_template="/opt/app/dfir-scripts/csv2XLsheet/templates/ServicesSlicer.xltx"
-    winservices_sheet="Services-Slicer"
-    winservices_output="$case_dir/All_Slicers/Services-$comp_name.xlsx"
-
-    # Convert to Excel if the CSV has at least 2 lines
-    if [ "$(wc -l < "$case_dir/Persistence/Services/winservices.py-$comp_name.csv")" -ge 2 ]; then
-      $csv2XL -i "$winservices_csv" -t "$winservices_template" -s "$winservices_sheet" -r 2 -o "$winservices_output"
-    else
-      rm "$case_dir/Persistence/Services/winservices.py-$comp_name.csv" 2>/dev/null
+      while read d;
+      do
+        timestamp=$(echo "$d" |awk -F',' '{print $1}')
+        timestamp1=$(date -d "$timestamp" +"%Y-%m-%d %H:%M:%S")
+        tlninfo=$(echo "$d" |awk -F',' '{print ",,[Service Last Write]:" $2 ";" $3"; SERVICE TYPE:"$4"; DISPLAY NAME: "$5"; IMAGE PATH: "$6"; DLL: "$7"; DESCRIPTION: "$8}')
+        echo "$timestamp1,Service,$comp_name$tlninfo" >> $timeline_dir/Triage-Timeline-$comp_name.csv
+      done
     fi
   fi
 }
@@ -1091,11 +1079,11 @@ function prefetch_extract() {
       grep -Eo '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1]) (2[0-3]|[01][0-9]):[0-5][0-9]:[0-5][0-9]')
       [ "$timestamp" != "" ] && tlntime=$(date -d "$timestamp"  +"%s" 2>/dev/null)
       [ "$tlntime" != "" ] && tlninfo=$(echo $d| \
-      awk -F',' '{print "[Program Execution] PF_File:"$3" Executable:"$4" Run Count:"$2" Volumes"$5}')
-      [ "$timestamp" != "" ] && echo $tlntime"|prefetch|"$comp_name"||"$tlninfo  >> $tempfile
+      awk -F',' '{print "[Program Execution] PF_File: "$6" PF_Created: "$4" PF_Modified: "$3" PF_Exe_File: "$5"  Run_Count: "$2}')
+      [ "$timestamp" != "" ] && echo $tlntime"|Prefetch|"$comp_name"||"$tlninfo  >> $tempfile
     done
     rm /tmp/prc.txt
-
+  
     # Prepare for Excel conversion
     prc_csv="$case_dir/Application_Execution/Prefetch/prefetchruncounts-$comp_name.csv"
     prc_template="/opt/app/dfir-scripts/csv2XLsheet/templates/PrefetchSlicer.xltx"
@@ -1119,12 +1107,24 @@ function parse_windows_index(){
   make_green "Extracting Windows Indexes (Sidr)"
     sidr $win_index  -o $case_dir/File_Access/Windows_Index
   fi
-  find  $case_dir/File_Access/Windows_Index -type f | \
-  while read d; 
-  do
-    index_file=$(echo "$d" |sed 's/json$/csv/')
-    /opt/venv/bin/python /usr/local/src/dfir-scripts/WinEventLogs/jsonl_to_csv.py $d > $index_file
-  done
+}
+
+#Parse OBJECTS.DATA file
+objects_data_extract(){
+  objects_data=$(find $winsysdir/wbem/Repository/ 2>/dev/null| grep -i -m1 '\/objects.data$')
+  if [ -f "$objects_data" ]; then
+    cd $mount_dir
+    make_green "Parsing OBJECTS.DATA file (PyWMIPersistenceFinder.py, CCM_RUA_Finder.py)"
+    sleep 1
+    find $winsysdir/wbem -maxdepth 2 -type f 2>/dev/null  | \
+    grep -i '\/objects.data$'|sed 's|^\./||'|\
+    while read d;
+    do
+      CCM_RUA_Finder.py -i "$d" | tee $case_dir/Scripting/WMI/CCM-RUA_Finder-$comp_name.csv
+      PyWMIPersistenceFinder.py "$d" >> $case_dir/Scripting/WMI/pyWMI-Persistence-Finder-$comp_name.csv
+    done
+    [ -f "$case_dir/Scripting/WMI/CCM-RUA_Finder-$comp_name.csv" ] && [ $(wc -l < "$case_dir/Scripting/WMI/CCM-RUA_Finder-$comp_name.csv") -le 2 ] && rm "$case_dir/Scripting/WMI/CCM-RUA_Finder-$comp_name.csv"
+  fi
 }
 
 #Timeline recycle.bin metadata
@@ -1187,7 +1187,10 @@ function srum_dump(){
     Standby...  This might take a while"
     /opt/venv/bin/python /opt/app/srum-dump/srum_dump2.py --SRUM_INFILE "$sru_file" \
     --XLSX_OUTFILE $case_dir/Application_Execution/SRUM/srum_dump-$comp_name.xlsx -r $regdir/SOFTWARE \
-    -q -t /opt/app/srum-dump/SRUM_TEMPLATE2.xlsx
+    -q -t /opt/app/srum-dump/SRUM_TEMPLATE2.xlsx  && \
+    cd $case_dir/Application_Execution/SRUM
+    sudo ssconvert -S "srum_dump-$comp_name.xlsx" srum_dump-$comp_name.csv 2>/dev/null
+    ls *csv*
   fi
 }
 
@@ -1613,81 +1616,8 @@ function consolidate_timeline(){
   if [ -f "$case_dir/File_System/AlternateDataStreams/AlternateDataStreams-$comp_name.csv" ]; then
     cat $case_dir/File_System/AlternateDataStreams/AlternateDataStreams-$comp_name.csv >> $timeline_dir/Triage-Timeline-$comp_name.csv
   fi
-  if [ -f "$timeline_dir/Triage-Timeline-$comp_name.csv" ]; then
-    tln_csv="$timeline_dir/Triage-Timeline-$comp_name.csv"
-    tln_template="/usr/local/src/dfir-scripts/csv2XLsheet/templates/TLNSlicer.xltx"
-    tln_sheet="TLN-Slicer"
-    tln_output="$case_dir/All_Slicers/Triage-Timeline-$comp_name.xlsx"
-    if [ $(wc -l <$timeline_dir/Triage-Timeline-$comp_name.csv) -ge 2 ]; then
-      $csv2XL -i $tln_csv -t $tln_template -s $tln_sheet -r 2 -o $tln_output
-    else
-      rm $timeline_dir/Triage-Timeline-$comp_name.csv 2> /dev/null
-    fi
-  fi
 }
 
-function scan_for_lolbas(){
-  #***** Lolbas in EVTX *****************************
-  if  [ "$(ls -A $case_dir/WindowsEventLogs/evtx_dump_$comp_name/ 2>/dev/null)" ]; then
-    make_green "Searching for executables identified as lolbas"
-    /opt/venv/bin/python /opt/app/dfir-scripts/WinEventLogs/scanforlolbas.py -p  "$case_dir/WindowsEventLogs/evtx_dump_$comp_name/" -l /opt/app/keywords/lolbas.csv >> $case_dir/Application_Execution/lolbas/lolbas-in-evtx-$comp_name.csv
-    if [  -f "$case_dir/Application_Execution/lolbas/lolbas-in-evtx-$comp_name.csv" ] ; then
-      sed -i "1i lolbas_file,source,message" $case_dir/Application_Execution/lolbas/lolbas-in-evtx-$comp_name.csv
-    fi
-  fi
-
-  #***** Lolbas in prefetch ***************************
-  if  [ "$(ls -A $case_dir/Application_Execution/Prefetch/ 2>/dev/null)" ] ; then
-    /opt/venv/bin/python /opt/app/dfir-scripts/WinEventLogs/scanforlolbas.py -p \
-    $case_dir/Application_Execution/Prefetch/ -l /opt/app/keywords/lolbas.csv >> $case_dir/Application_Execution/lolbas/lolbas-in-Prefetch-$comp_name.csv
-    if  [ -f "$case_dir/Application_Execution/lolbas/lolbas-in-Prefetch-$comp_name.csv" ] ; then
-      sed -i "1i lolbas_file,source,message" $case_dir/Application_Execution/lolbas/lolbas-in-Prefetch-$comp_name.csv
-    fi
-  fi
-
-    #***** Lolbas in AmCache ***************************
-  if  [ "$(ls -A $case_dir/Application_Execution/Amcache/ 2>/dev/null)" ] ; then
-    /opt/venv/bin/python /opt/app/dfir-scripts/WinEventLogs/scanforlolbas.py -p \
-    $case_dir/Application_Execution/Amcache/ -l /opt/app/keywords/lolbas.csv >> $case_dir/Application_Execution/lolbas/lolbas-in-AmCache-$comp_name.csv
-    if  [ -f "$case_dir/Application_Execution/lolbas/lolbas-in-AmCache-$comp_name.csv" ] ; then
-      sed -i "1i lolbas_file,source,message" $case_dir/Application_Execution/lolbas/lolbas-in-AmCache-$comp_name.csv
-    fi
-  fi
-
-  #***** Lolbas in Services ***************************
-  if  [ "$(ls -A $case_dir/Persistence/ 2>/dev/null)" ] ; then
-    /opt/venv/bin/python /opt/app/dfir-scripts/WinEventLogs/scanforlolbas.py -p \
-    $case_dir/Persistence/ -l /opt/app/keywords/lolbas.csv >> $case_dir/Application_Execution/lolbas/lolbas-in-Persistence-$comp_name.csv
-    if  [ -f "$case_dir/Application_Execution/lolbas/lolbas-in-Services-$comp_name.csv" ] ; then
-      sed -i "1i lolbas_file,source,message" $case_dir/Application_Execution/lolbas/lolbas-in-Services-$comp_name.csv
-    fi
-  fi
-
-  #***** Lolbas in Bits *****************************
-  if  [ $( -f "$case_dir/Persistence/BITS/parse_evtx_BITS.py-$comp_name.csv" 2>/dev/null) ] ; then
-    /opt/venv/bin/python /opt/app/dfir-scripts/WinEventLogs/scanforlolbas.py -p \
-    $case_dir/Persistence/BITS/ -l /opt/app/keywords/lolbas.csv >> $case_dir/Application_Execution/lolbas/lolbas-in-BITS-$comp_name.csv
-    if  [ -f "$case_dir/Application_Execution/lolbas/lolbas-in-BITS-$comp_name.csv" ] ; then
-      sed -i "1i lolbas_file,source,message" $case_dir/Application_Execution/lolbas/lolbas-in-BITS-$comp_name.csv
-    fi
-  fi
-
-  #***** Lolbas in Windows Timeline *****************************
-  find $case_dir/Timeline/WinActivitiesCache/ -type f 2>/dev/null |grep WindowsTimeline.sql | \
-    while read f;
-    do
-      user_name=$(echo "$f"|sed 's|.*/||' |awk -F'\\-' '{print $2}')
-      cat "$f" 2>/dev/null| awk -F'|' '{print $3}'|grep  exe|awk -F'\' '{print $NF}' >> /tmp/exe.txt
-      [ -f "/tmp/exe.txt" ] &&  /opt/venv/bin/python /opt/app/dfir-scripts/WinEventLogs/scanforlolbas.py -p  /tmp/exe.txt -l /opt/app/keywords/lolbas.csv | \
-      awk -F',' '{print $1}' |sed 's/ /,/' |sort | uniq -c | sort -rn >> $case_dir/Application_Execution/lolbas/lolbas-in-ActivitiesCache-$comp_name.csv
-      [ -f $case_dir/Application_Execution/lolbas/lolbas-in-ActivitiesCache-$comp_name.csv ] && sed -i "s/$/,$user_name/" $case_dir/Application_Execution/lolbas/lolbas-in-ActivitiesCache-$comp_name.csv && \
-      sed -i "1i Count lolbas_file,User_Name" $case_dir/Application_Execution/lolbas/lolbas-in-ActivitiesCache-$comp_name.csv
-      rm /tmp/exe.txt 2>/dev/null
-    done
-  #***** Lolbas in WinActivitiesCache *****************************
-    [ -f $case_dir/All_Summary/WinActivitiesCache-stats-$comp_name.csv ] && sed -i "s/$/,$user_name/" $case_dir/All_Summary/WinActivitiesCache-stats-$comp_name.csv && \
-    sed -i "1i Count lolbas_file,User_Name" $case_dir/All_Summary/WinActivitiesCache-stats-$comp_name.csv
-}
 
 ###########Zimmeman Artifact Parsers ##################################
 #amcacheparser
